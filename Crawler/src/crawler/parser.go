@@ -8,19 +8,20 @@ import (
 	"strings"
 
 	"golang.org/x/net/html"
+	"sync"
 )
 
 func isSelected(url string) bool {
 	return DefaultDomainSelector.Match([]byte(url))
 }
 
-func parseLinks(resp *http.Response) []string {
+func parseLinks(resp *http.Response, wg sync.WaitGroup) []string {
 	if !isMIMEOk(resp) {
 		return nil
 	}
-
 	var result []string
 	tokenizer := html.NewTokenizer(resp.Body)
+
 	checkAndAppend := func(uri string) {
 		if idx := strings.LastIndex(uri, "#"); idx != -1 {
 			uri = uri[:idx]
@@ -58,6 +59,7 @@ func parseLinks(resp *http.Response) []string {
 			for _, attr := range t.Attr {
 				if attr.Key == "href" {
 					checkAndAppend(attr.Val)
+
 				}
 			}
 		}

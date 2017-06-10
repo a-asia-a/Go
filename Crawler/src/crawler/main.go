@@ -8,9 +8,11 @@ import (
 	"strings"
 	"log"
 	"github.com/temoto/robotstxt"
+	"io/ioutil"
+	"net/http"
+	"os"
+	"bufio"
 )
-
-
 
 func checkDuplicate(in chan Graph) chan Graph {
 	ch := make(chan Graph)
@@ -20,7 +22,7 @@ func checkDuplicate(in chan Graph) chan Graph {
 		if gr.from == gr.to {
 			return
 		}
-		fmt.Println(visited[gr.from], visited[gr.to])
+		//fmt.Println(visited[gr.from], visited[gr.to])
 	}
 
 	go func() {
@@ -34,7 +36,7 @@ func checkDuplicate(in chan Graph) chan Graph {
 				}
 				report(x)
 
-			case <- DefaultDone:
+			case <-DefaultDone:
 				return
 			}
 		}
@@ -76,36 +78,85 @@ func checkRobo(url string) bool {
 	return robo.Test(path)
 }
 
-func addressUri(url string) {
+func addressUri(url string, wg sync.WaitGroup) {
+
 	if !checkRobo(url) {
 		return
 	}
 
-	log.Println("visiting:", url, "goroutines:", runtime.NumGoroutine())
+	//log.Println("visiting:", url, "goroutines:", runtime.NumGoroutine())
+
 
 	resp, err := DefaultClient.Get(url)
+
 	if err != nil {
 		log.Println(err)
 		return
 	}
-	defer resp.Body.Close()
 
-	for _, link := range parseLinks(resp) {
-		input  <- Graph{url, link}
+	defer resp.Body.Close()
+	for _, link := range parseLinks(resp, wg) {
+		input <- Graph{url, link}
+		fmt.Println(link)
 	}
+}
+
+func saveToFile(xml string, filename string) {
+	file, error := os.Create(filename)
+	if error != nil {
+		panic(error)
+	}
+	defer file.Close()
+	w := bufio.NewWriter(file)
+	defer w.Flush()
+
+	_, err := fmt.Fprintf(w, xml)
+	if err != nil {
+		panic(err)
+	}
+
+}
+
+type Response struct {
+	Body       string
+	StatusCode int
+}
+
+func Gets(url string) *Response {
+	res, err := http.Get(url)
+	if err != nil {
+		return &Response{}
+	}
+	defer res.Body.Close()
+
+	body, err := ioutil.ReadAll(res.Body)
+
+	saveToFile(string(body), "outpsut")
+
+	if err != nil {
+		log.Fatalf("ReadAll: %v", err)
+	}
+	return &Response{string(body), res.StatusCode}
 }
 
 func solver() {
 	input <- Graph{DefaultInitialWeb, DefaultInitialWeb}
+
 	var wg sync.WaitGroup
 	q := smallBuffer(checkDuplicate(input))
 	wg.Add(DefaultNumWorkers)
+	done := make(chan *Response, 3)
 	worker := func() {
 		defer wg.Done()
 		for {
 			select {
 			case uri := <-q:
-				addressUri(uri.to)
+				addressUri(uri.to, wg)
+				go func() {
+					defer wg.Done()
+					done <- Gets(uri.to)
+				}()
+
 			case <-time.After(DefaultCrawlDelay):
 				return
 			}
@@ -114,6 +165,7 @@ func solver() {
 	for i := 0; i < DefaultNumWorkers; i++ {
 		go worker()
 	}
+
 	wg.Wait()
 	close(input)
 	close(DefaultDone)
